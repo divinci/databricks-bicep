@@ -1,0 +1,122 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - bicep/databricks/*
+
+variables:
+  - group: databricks-secrets
+  - name: resourceGroupName
+    value: 'rg-databricks-infrastructure'
+  - name: location
+    value: 'East US'
+
+stages:
+  - stage: ValidateBicep
+    displayName: 'Validate Bicep Templates'
+    jobs:
+      - job: ValidateTemplates
+        displayName: 'Validate Databricks Bicep Templates'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Validate Bicep Templates'
+            inputs:
+              azureSubscription: 'Azure-ServiceConnection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Validate main template
+                az deployment group validate \
+                  --resource-group $(resourceGroupName) \
+                  --template-file bicep/main.bicep \
+                  --parameters environment=staging \
+                               databricksWorkspaceUrl=$(DATABRICKS_WORKSPACE_URL)
+                
+                echo "Bicep template validation completed successfully"
+
+  - stage: DeployStaging
+    displayName: 'Deploy to Staging'
+    dependsOn: ValidateBicep
+    condition: succeeded()
+    jobs:
+      - deployment: DeployDatabricksStaging
+        displayName: 'Deploy Databricks Infrastructure to Staging'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'staging'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Deploy Databricks Custom Provider'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az deployment group create \
+                        --resource-group $(resourceGroupName) \
+                        --template-file $(Pipeline.Workspace)/drop/bicep/main.bicep \
+                        --parameters environment=staging \
+                                     databricksWorkspaceUrl=$(DATABRICKS_WORKSPACE_URL) \
+                        --name "databricks-staging-$(Build.BuildNumber)"
+
+                - task: AzureCLI@2
+                  displayName: 'Run ETL Job Test'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Get deployment outputs
+                      DEPLOYMENT_OUTPUT=$(az deployment group show \
+                        --resource-group $(resourceGroupName) \
+                        --name "databricks-staging-$(Build.BuildNumber)" \
+                        --query properties.outputs)
+                      
+                      ETL_JOB_ID=$(echo $DEPLOYMENT_OUTPUT | jq -r '.etlJobId.value')
+                      PROVIDER_NAME=$(echo $DEPLOYMENT_OUTPUT | jq -r '.databricksProviderName.value')
+                      
+                      # Trigger test ETL job run
+                      az deployment group create \
+                        --resource-group $(resourceGroupName) \
+                        --template-file $(Pipeline.Workspace)/drop/bicep/databricks-operations.bicep \
+                        --parameters databricksProviderName=$PROVIDER_NAME \
+                                     jobId=$ETL_JOB_ID \
+                                     operationType=run-job \
+                        --name "test-etl-$(Build.BuildNumber)"
+
+  - stage: DeployProduction
+    displayName: 'Deploy to Production'
+    dependsOn: DeployStaging
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployDatabricksProduction
+        displayName: 'Deploy Databricks Infrastructure to Production'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Deploy Databricks Infrastructure'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az deployment group create \
+                        --resource-group $(resourceGroupName) \
+                        --template-file $(Pipeline.Workspace)/drop/bicep/main.bicep \
+                        --parameters environment=production \
+                                     databricksWorkspaceUrl=$(DATABRICKS_WORKSPACE_URL) \
+                        --name "databricks-production-$(Build.BuildNumber)"
+                      
+                      echo "Databricks infrastructure deployed successfully to production"

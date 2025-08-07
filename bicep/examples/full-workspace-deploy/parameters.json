@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "NamePrefix": {
+      "value": "my-databricks"
+    },
+    "Location": {
+      "value": "East US"
+    },
+    "DatabricksToken": {
+      "reference": {
+        "keyVault": {
+          "id": "/subscriptions/{subscription-id}/resourceGroups/{rg-name}/providers/Microsoft.KeyVault/vaults/{vault-name}"
+        },
+        "secretName": "databricks-token"
+      }
+    },
+    "WorkspaceUrl": {
+      "value": "https://adb-123456789.azuredatabricks.net"
+    },
+    "Environment": {
+      "value": "Production"
+    }
+  }
+}
